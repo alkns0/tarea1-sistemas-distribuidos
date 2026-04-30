@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel #Validación de datos
 from typing import Optional
 import time
 
@@ -7,6 +7,7 @@ app = FastAPI()
 events = []
 start_time = time.time()
 evictions = 0
+
 
 class MetricEvent(BaseModel):
     event: str
@@ -59,6 +60,7 @@ def get_stats():
 
     cache_efficiency = ((n_hits * t_cache) - (n_misses * t_db)) / total if total > 0 else 0
 
+    #METRICAS RETORNADAS
     return {
         "hit_rate": round(n_hits / total, 4) if total > 0 else 0,
         "throughput_rps": round(total / elapsed, 4) if elapsed > 0 else 0,
