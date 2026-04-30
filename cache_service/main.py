@@ -47,21 +47,21 @@ def handle_query(query_type: str, zone_id: str = None, zone_a: str = None,
     cache_key = build_cache_key(query_type, params)
     start = time.time()
 
-    # Intentar hit en caché
+    # hit en caché
     cached = r.get(cache_key)
     if cached:
         latency = time.time() - start
         send_metric("hit", latency, {"query_type": query_type, "zone": zone_id or f"{zone_a}-{zone_b}"})
         return {"source": "cache", "data": json.loads(cached), "latency": latency}
 
-    # Cache miss: delegar al generador de respuestas
+    # delegar
     with httpx.Client() as client:
         response = client.get(f"{RESPONSE_GENERATOR_URL}/{query_type}", params=params, timeout=10.0)
         result = response.json()
 
     latency = time.time() - start
 
-    # Guardar en caché con TTL
+    #cache con ttl
     r.setex(cache_key, CACHE_TTL, json.dumps(result))
     send_metric("miss", latency, {"query_type": query_type, "zone": zone_id or f"{zone_a}-{zone_b}"})
 
