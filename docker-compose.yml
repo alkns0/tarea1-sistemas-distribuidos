@@ -1,0 +1,62 @@
+
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 200mb --maxmemory-policy allkeys-lru
+    networks:
+      - app-net
+
+  response_generator:
+    build: ./response_generator
+    environment:
+      - DATA_PATH=/data/buildings.csv
+    volumes:
+      - ./data:/data
+    networks:
+      - app-net
+    ports:
+      - "8001:8001"
+
+
+  cache_service:
+    build: ./cache_service
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RESPONSE_GENERATOR_URL=http://response_generator:8001
+      - METRICS_URL=http://metrics_service:8002
+      - CACHE_TTL=300
+    depends_on:
+      - redis
+      - response_generator
+      - metrics_service
+    networks:
+      - app-net
+    ports:
+      - "8000:8000"
+
+  metrics_service:
+    build: ./metrics_service
+    networks:
+      - app-net
+    ports:
+      - "8002:8002"
+
+  traffic_generator:
+    build: ./traffic_generator
+    environment:
+      - CACHE_SERVICE_URL=http://cache_service:8000
+      - DISTRIBUTION=zipf          # o "uniform"
+      - NUM_REQUESTS=1000
+      - RATE=10                    # requests / segundo
+    depends_on:
+      - cache_service
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    driver: bridge
