@@ -4,6 +4,7 @@ import time
 import httpx
 
 from kafka import KafkaConsumer
+from kafka import KafkaProducer
 
 KAFKA_SERVER = os.getenv(
     "KAFKA_SERVER",
@@ -25,6 +26,10 @@ METRICS_URL = os.getenv(
     "http://metrics_service:8002"
 )
 
+# -------------------------------------
+# CONSUMER
+# -------------------------------------
+
 consumer = KafkaConsumer(
     "queries-topic",
     bootstrap_servers=KAFKA_SERVER,
@@ -34,8 +39,22 @@ consumer = KafkaConsumer(
     auto_offset_reset="earliest"
 )
 
+# -------------------------------------
+# DLQ PRODUCER
+# -------------------------------------
+
+producer = KafkaProducer(
+    bootstrap_servers=KAFKA_SERVER,
+    value_serializer=lambda v:
+        json.dumps(v).encode("utf-8")
+)
+
 print("Kafka Consumer iniciado...")
 
+
+# -------------------------------------
+# METRICS
+# -------------------------------------
 
 def send_metric(event, latency, query_type):
 
@@ -57,6 +76,10 @@ def send_metric(event, latency, query_type):
         pass
 
 
+# -------------------------------------
+# MAIN LOOP
+# -------------------------------------
+
 for msg in consumer:
 
     message = msg.value
@@ -69,9 +92,9 @@ for msg in consumer:
 
     try:
 
-        # -------------------------
+        # -------------------------------------
         # CACHE LOOKUP
-        # -------------------------
+        # -------------------------------------
 
         with httpx.Client() as client:
 
@@ -86,9 +109,9 @@ for msg in consumer:
 
             cache_data = cache_response.json()
 
-        # -------------------------
+        # -------------------------------------
         # CACHE HIT
-        # -------------------------
+        # -------------------------------------
 
         if cache_data["hit"]:
 
@@ -107,9 +130,9 @@ for msg in consumer:
 
             continue
 
-        # -------------------------
+        # -------------------------------------
         # CACHE MISS
-        # -------------------------
+        # -------------------------------------
 
         print(f"MISS {query_type}")
 
@@ -117,19 +140,74 @@ for msg in consumer:
 
         del params["query_type"]
 
-        with httpx.Client() as client:
+        result = None
 
-            response = client.get(
-                f"{RESPONSE_GENERATOR_URL}/{query_type}",
-                params=params,
-                timeout=10.0
+        # -------------------------------------
+        # RETRIES
+        # -------------------------------------
+
+        for attempt in range(3):
+
+            try:
+
+                with httpx.Client() as client:
+
+                    response = client.get(
+                        f"{RESPONSE_GENERATOR_URL}/{query_type}",
+                        params=params,
+                        timeout=10.0
+                    )
+
+                    response.raise_for_status()
+
+                    result = response.json()
+
+                print(
+                    f"SUCCESS {query_type} "
+                    f"attempt={attempt + 1}"
+                )
+
+                break
+
+            except Exception as e:
+
+                print(
+                    f"RETRY {attempt + 1}/3 "
+                    f"{query_type}: {e}"
+                )
+
+                time.sleep(1)
+
+        # -------------------------------------
+        # FAILED AFTER RETRIES -> DLQ
+        # -------------------------------------
+
+        if result is None:
+
+            print(
+                f"DLQ SEND {query_type}"
             )
 
-            result = response.json()
+            producer.send(
+                "queries-dlq",
+                message
+            )
 
-        # -------------------------
+            producer.flush()
+
+            latency = time.time() - start
+
+            send_metric(
+                "dlq",
+                latency,
+                query_type
+            )
+
+            continue
+
+        # -------------------------------------
         # STORE CACHE
-        # -------------------------
+        # -------------------------------------
 
         with httpx.Client() as client:
 
@@ -161,3 +239,22 @@ for msg in consumer:
         print(
             f"ERROR processing message: {e}"
         )
+
+        try:
+
+            producer.send(
+                "queries-dlq",
+                message
+            )
+
+            producer.flush()
+
+            print(
+                f"SENT TO DLQ {query_type}"
+            )
+
+        except Exception as dlq_error:
+
+            print(
+                f"DLQ ERROR: {dlq_error}"
+            )
